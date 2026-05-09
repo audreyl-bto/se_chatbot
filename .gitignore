@@ -1,0 +1,21 @@
+# Environment
+.env
+
+# Vector store (rebuilt by ingest.py — no need to commit)
+vectorstore/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
