@@ -1,21 +1,24 @@
 import os
 import glob
+import argparse
 from pathlib import Path
 
 import pypdf
 import chromadb
-from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
-COLLECTION_NAME = "liquid_handler_manual"
 DATA_DIR = "data"
 VECTORSTORE_DIR = "vectorstore"
-EMBED_MODEL = "text-embedding-3-small"
 BATCH_SIZE = 100
+
+COLLECTIONS = {
+    "openai": "liquid_handler_openai",
+    "gemini": "liquid_handler_gemini",
+}
 
 
 def extract_pages(pdf_path: str) -> list[dict]:
@@ -38,35 +41,52 @@ def chunk_text(text: str) -> list[str]:
     return [c for c in chunks if c.strip()]
 
 
-def embed(texts: list[str], client: OpenAI) -> list[list[float]]:
-    response = client.embeddings.create(model=EMBED_MODEL, input=texts)
+def embed_openai(texts: list[str]) -> list[list[float]]:
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    response = client.embeddings.create(model="text-embedding-3-small", input=texts)
     return [item.embedding for item in response.data]
 
 
-def ingest():
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    chroma = chromadb.PersistentClient(path=VECTORSTORE_DIR)
+def embed_gemini(texts: list[str]) -> list[list[float]]:
+    import google.generativeai as genai
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    embeddings = []
+    for text in texts:
+        result = genai.embed_content(
+            model="models/text-embedding-004",
+            content=text,
+            task_type="retrieval_document",
+        )
+        embeddings.append(result["embedding"])
+    return embeddings
 
+
+def ingest_provider(provider: str):
+    embed_fn = embed_openai if provider == "openai" else embed_gemini
+    collection_name = COLLECTIONS[provider]
+
+    chroma = chromadb.PersistentClient(path=VECTORSTORE_DIR)
     try:
-        chroma.delete_collection(COLLECTION_NAME)
-        print(f"Removed existing collection '{COLLECTION_NAME}'")
+        chroma.delete_collection(collection_name)
+        print(f"  Removed existing '{collection_name}' collection")
     except Exception:
         pass
 
     collection = chroma.create_collection(
-        name=COLLECTION_NAME,
+        name=collection_name,
         metadata={"hnsw:space": "cosine"},
     )
 
     pdf_files = glob.glob(f"{DATA_DIR}/*.pdf")
     if not pdf_files:
-        print(f"No PDFs found in {DATA_DIR}/  — drop your manual there and re-run.")
+        print(f"  No PDFs found in {DATA_DIR}/")
         return
 
     doc_id = 0
     for pdf_path in pdf_files:
         filename = Path(pdf_path).name
-        print(f"\nProcessing {filename}...")
+        print(f"  Processing {filename}...")
         pages = extract_pages(pdf_path)
 
         chunks, metadatas, ids = [], [], []
@@ -79,8 +99,8 @@ def ingest():
 
         for i in range(0, len(chunks), BATCH_SIZE):
             batch_end = min(i + BATCH_SIZE, len(chunks))
-            print(f"  Embedding chunks {i + 1}–{batch_end} of {len(chunks)}...")
-            embeddings = embed(chunks[i:batch_end], client)
+            print(f"    Embedding chunks {i + 1}–{batch_end} of {len(chunks)}...")
+            embeddings = embed_fn(chunks[i:batch_end])
             collection.add(
                 embeddings=embeddings,
                 documents=chunks[i:batch_end],
@@ -90,8 +110,27 @@ def ingest():
 
         print(f"  Done — {len(chunks)} chunks from {filename}")
 
-    print(f"\nIngestion complete. Total chunks stored: {doc_id}")
+    print(f"  Total chunks stored: {doc_id}\n")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--provider",
+        choices=["openai", "gemini", "both"],
+        default="both",
+        help="Which provider to ingest for (default: both)",
+    )
+    args = parser.parse_args()
+
+    providers = ["openai", "gemini"] if args.provider == "both" else [args.provider]
+
+    for provider in providers:
+        print(f"\n=== Ingesting for {provider.upper()} ===")
+        ingest_provider(provider)
+
+    print("Ingestion complete.")
 
 
 if __name__ == "__main__":
-    ingest()
+    main()
