@@ -35,14 +35,15 @@ def _embed_query_openai(query: str) -> list[float]:
 
 
 def _embed_query_gemini(query: str) -> list[float]:
-    import google.generativeai as genai
-    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-    result = genai.embed_content(
-        model="models/text-embedding-004",
-        content=query,
-        task_type="retrieval_query",
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    result = client.models.embed_content(
+        model="gemini-embedding-001",
+        contents=query,
+        config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
     )
-    return result["embedding"]
+    return result.embeddings[0].values
 
 
 def _chat_openai(context: str, query: str, chat_history: list[dict]) -> str:
@@ -63,23 +64,24 @@ def _chat_openai(context: str, query: str, chat_history: list[dict]) -> str:
 
 
 def _chat_gemini(context: str, query: str, chat_history: list[dict]) -> str:
-    import google.generativeai as genai
-    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        system_instruction=SYSTEM_PROMPT,
-    )
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     # Convert history: "assistant" → "model" (Gemini's role name)
     history = [
-        {
-            "role": "model" if msg["role"] == "assistant" else "user",
-            "parts": [msg["content"]],
-        }
+        types.Content(
+            role="model" if msg["role"] == "assistant" else "user",
+            parts=[types.Part(text=msg["content"])],
+        )
         for msg in chat_history[-6:]
     ]
-    chat = model.start_chat(history=history)
-    response = chat.send_message(
-        f"Context from manual:\n\n{context}\n\nQuestion: {query}"
+    response = client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=history + [types.Content(
+            role="user",
+            parts=[types.Part(text=f"Context from manual:\n\n{context}\n\nQuestion: {query}")],
+        )],
+        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
     )
     return response.text
 
